@@ -373,12 +373,14 @@ void loop() {
     bool errorFlag = false;
 
     for (int i = 0; i < SPI_BUFF_SIZE; i++) {
-      if (i == 0)
+      if (i == 0) {
         if (recData[i] != 0x4C) // First byte is supposed to be this
           errorFlag = true;
-      else if (i == 1)
+      }
+      else if (i == 1) {
         if (recData[i] != 0x47) // Second byte is supposed to be this
           errorFlag = true;
+      }
       else {
         uint16_t datum = ((uint16_t)recData[i] << 8) | recData[++i];
         uint8_t channelNumber = (datum & channelMask) >> 12;
@@ -388,9 +390,13 @@ void loop() {
     
     if (errorFlag) {
       Serial.println("ERROR in SPI transmission! Trying to reset SPI...");
-      SPI.begin(); 
-      SPI.setClockDivider(SPI_CLOCK_DIV2);
-      SPI.setDataMode(SPI_MODE1);
+//      SPI.begin(); 
+//      SPI.setClockDivider(SPI_CLOCK_DIV2);
+//      SPI.setDataMode(SPI_MODE1);
+      digitalWrite(slaveSelectPin,HIGH);
+      delay(10);
+      digitalWrite(slaveSelectPin,LOW);
+        
     } 
     else // If no error, write monitor data to file to be displayed
       sendSerializedMonitorData(currentData);

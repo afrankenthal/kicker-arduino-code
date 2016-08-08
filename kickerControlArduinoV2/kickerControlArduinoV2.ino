@@ -118,41 +118,74 @@ static bool dmac_channel_transfer_done(uint32_t ul_num) {
   return (DMAC->DMAC_CHSR & (DMAC_CHSR_ENA0 << ul_num)) ? false : true;
 }
 
-/** start RX DMA */
+/**
+ * Start RX DMA - This function configures the RX channel of the DMA,
+ * with many obscure registers configuration. Refer to the beginning comments for the
+ * reference to this code.
+ */
 void spiDmaRX(uint8_t* dst, uint16_t count) {
   dmac_channel_disable(SPI_DMAC_RX_CH);
+  
+  // Configures the source address register to be the SPI Read register
   DMAC->DMAC_CH_NUM[SPI_DMAC_RX_CH].DMAC_SADDR = (uint32_t)&SPI0->SPI_RDR;
+  // Configures the destination address register to be the dst pointer in memory
   DMAC->DMAC_CH_NUM[SPI_DMAC_RX_CH].DMAC_DADDR = (uint32_t)dst;
   DMAC->DMAC_CH_NUM[SPI_DMAC_RX_CH].DMAC_DSCR =  0;
+  // Configures a bunch of SPI parameters, such as 8 bits per packet,
+  // both in the destination and the source
   DMAC->DMAC_CH_NUM[SPI_DMAC_RX_CH].DMAC_CTRLA = count |
     DMAC_CTRLA_SRC_WIDTH_BYTE | DMAC_CTRLA_DST_WIDTH_BYTE;
+  // Configures another bunch of SPI parameters, such as saying that
+  // this (RX) is a peripheral to memory (PER2MEM) transaction and that
+  // the memory addresses to store the data are incrementing by one, so
+  // we only need to provide the first pointer (dst) and the DMA automatically
+  // manages the rest
   DMAC->DMAC_CH_NUM[SPI_DMAC_RX_CH].DMAC_CTRLB = DMAC_CTRLB_SRC_DSCR |
     DMAC_CTRLB_DST_DSCR | DMAC_CTRLB_FC_PER2MEM_DMA_FC |
     DMAC_CTRLB_SRC_INCR_FIXED | DMAC_CTRLB_DST_INCR_INCREMENTING;
+  // Configures yet some other DMA stuff (not sure what these ones do, but
+  // you can find them in the Atmel documentation)
   DMAC->DMAC_CH_NUM[SPI_DMAC_RX_CH].DMAC_CFG = DMAC_CFG_SRC_PER(SPI_RX_IDX) |
     DMAC_CFG_SRC_H2SEL | DMAC_CFG_SOD | DMAC_CFG_FIFOCFG_ASAP_CFG;
+    
   dmac_channel_enable(SPI_DMAC_RX_CH);
 }
 
-/** start TX DMA */
+/** Start TX DMA - This function configures the TX channel of the DMA,
+ *  also with many obscure registers configuration. Refer to the beginning
+ *  comments for the reference to this code.  
+*/
 void spiDmaTX(const uint8_t* src, uint16_t count) {
+
+  // This block of code enforces that the TX channel in DMA
+  // always sends some stuff, even if a source pointer is 
+  // not provided. In that case, the DMA just keeps sending
+  // the word ff, instead of incrementing the src pointer
   static uint8_t ff = 0Xff;
   uint32_t src_incr = DMAC_CTRLB_SRC_INCR_INCREMENTING;
   if (!src) {
     src = &ff;
     src_incr = DMAC_CTRLB_SRC_INCR_FIXED;
   }
+  
   dmac_channel_disable(SPI_DMAC_TX_CH);
+  
+  // Configures the source address for TX to be the src pointer
   DMAC->DMAC_CH_NUM[SPI_DMAC_TX_CH].DMAC_SADDR = (uint32_t)src;
+  // Configures the destination address for TX to be the TDR register
+  // of the SPI, which sends the data
   DMAC->DMAC_CH_NUM[SPI_DMAC_TX_CH].DMAC_DADDR = (uint32_t)&SPI0->SPI_TDR;
   DMAC->DMAC_CH_NUM[SPI_DMAC_TX_CH].DMAC_DSCR =  0;
+  // Configures the size of the packet to 8 bits
   DMAC->DMAC_CH_NUM[SPI_DMAC_TX_CH].DMAC_CTRLA = count |
     DMAC_CTRLA_SRC_WIDTH_BYTE | DMAC_CTRLA_DST_WIDTH_BYTE;
-
+  // Configure some DMA stuff, such as saying this is a memory to peripheral
+  // transaction (MEM2PER)
   DMAC->DMAC_CH_NUM[SPI_DMAC_TX_CH].DMAC_CTRLB =  DMAC_CTRLB_SRC_DSCR |
     DMAC_CTRLB_DST_DSCR | DMAC_CTRLB_FC_MEM2PER_DMA_FC |
     src_incr | DMAC_CTRLB_DST_INCR_FIXED;
-
+  // Configures yet more DMA stuff, not sure what this does but you can find
+  // out in the Atmel documentation
   DMAC->DMAC_CH_NUM[SPI_DMAC_TX_CH].DMAC_CFG = DMAC_CFG_DST_PER(SPI_TX_IDX) |
       DMAC_CFG_DST_H2SEL | DMAC_CFG_SOD | DMAC_CFG_FIFOCFG_ALAP_CFG;
 
@@ -171,6 +204,10 @@ int spiBufferCounter;
 uint8_t spiCommFlag = 0;
 bool spiDoneFlag = false;
 
+/**
+ * This function initializes the SPI, and configures
+ * the DMA controller (DMAC).
+ */
 void SPIInitialization(uint8_t _pin) {
   
   SPI.begin(_pin);
@@ -179,7 +216,7 @@ void SPIInitialization(uint8_t _pin) {
   REG_SPI0_MR = SPI_MR_MODFDIS;   // slave and no modefault
   
   REG_SPI0_CSR = 0x00;    // DLYBCT=0, DLYBS=0, SCBR=0, 8 bit transfer
-  // REG_SPI0_CSR = 0x64640000;
+  // REG_SPI0_CSR = 0x64640000; // Test with longer delays between transfers
 
   // Configure DMAC
   pmc_enable_periph_clk(ID_DMAC);
@@ -190,25 +227,52 @@ void SPIInitialization(uint8_t _pin) {
   spiBufferCounter = 0;
 }
 
+/** 
+ *  This function performs the SPI transfer between the Due and the Galileo.
+ *  This is a non-blocking function (i.e. doesn't wait for the SPI to conclude)
+ *  before finishing and that's why we use the spiCommFlag to keep track of where
+ *  in the SPI process we currently are. if spiCommFlag is 0, then we are beginning
+ *  a SPI transfer, so we first set up the DMA buffers, which takes a little bit of time,
+ *  more than we can afford to wait. So at the next run of this function, we check if the
+ *  DMA setup is finish, by checking inside the spiCommFlag = 1 if clause if the
+ *  the dmac_channel_transfer_done is true for both RX and TX channels. If so then we proceed to
+ *  wait until the actual transfer is done, which is indicated by the SPI_SR_TXEMPTY register,
+ *  which tells us the tx buffer is now empty.
+ */
 static bool spiSendReceiveNonBlock(uint8_t * outBuf, uint8_t * inBuf, size_t len) {
+
+  // Create an SPI instance
   Spi * pSpi = SPI0;
   bool doneFlag = false;
 
+  // Check if we are at the beginning of an SPI/DMA cycle
   if (spiCommFlag == 0) {
     Serial.println("Beginning DMA");
+
+    // Need to read status register just in case
     uint32_t s = pSpi->SPI_SR;
+
+    // Tells DMA which in/out buffers to use
     spiDmaRX(inBuf, len);
     spiDmaTX(outBuf, len);
+
+    // Moves workflow to next stage
     spiCommFlag = 1;
   }
+  // Check if we are waiting for DMA to finish
   else if (spiCommFlag == 1) {
     if (dmac_channel_transfer_done(SPI_DMAC_RX_CH) && dmac_channel_transfer_done(SPI_DMAC_TX_CH)) {
+      // Moves workflow to next stage
       spiCommFlag = 2;
     }
   }
+  // Check if we are waiting for SPI to finish
   else if (spiCommFlag == 2) {
     Serial.println("Waiting for transmission to finish");
+
+    // If TXEMPTY is true then we are done
     if (pSpi->SPI_SR & SPI_SR_TXEMPTY) {
+      // Read the RDR just to make sure it's empty
       uint8_t b = pSpi->SPI_RDR;
       spiCommFlag = 0;
       doneFlag = true;
@@ -222,20 +286,29 @@ static bool spiSendReceiveNonBlock(uint8_t * outBuf, uint8_t * inBuf, size_t len
 // -----------------------------------------------------------------------------------------------------
 // ADC defines
 
+// Defines the size of the transformer data in number of samples
 #define ADC_LEN 1024
-#define BUFFER_LEN 256
+// Defines the size of the ADC buffer length
+#define BUFFER_LEN 1024
+// Maximum ADC buffers in one SPI packet
+int maxAdcBuffers = (SPI_BUFF_SIZE + 4)/(2 * BUFFER_LEN);
 
+// Creates 4 buffers that are rotated consecutively to collect data
 volatile int bufn,obufn;
 uint16_t buf[4][BUFFER_LEN];   // 4 buffers of 256 readings
 
+// This is the channel mask that selects the first 4 bits out of the 16
+// for channel id - the other 12 are ADC data
 unsigned int channelMask = 0xf000;
 
-bool discardFirstData = 1;
-
+/** Converts between ADC channels and Arduino channels */
 inline static uint8_t convertAnalogChannelToADC(uint8_t analog) {
   return (analog <= 7) ? 7 - analog : analog + 2;
 }
 
+/** Manipulates the ADC channel enable/disable registers
+ *  to enable or disable channels for the ADC to read
+ */
 inline void enableAnalogChannel(uint8_t pinAnalog) {
   uint8_t pinADC = convertAnalogChannelToADC(pinAnalog);
   ADC->ADC_CHER |= (1 << pinADC);
@@ -253,43 +326,80 @@ inline void disableAllChannels() {
   ADC->ADC_CHDR = ~(0x00);
 }
 
+inline void controlAnalogChannel(uint8_t pinAnalog, bool state) {
+  if (state) {
+    enableAnalogChannel(pinAnalog);
+  }
+  else {
+    disableAnalogChannel(pinAnalog);
+  }
+}
+
+/** This function is called by the ADC when a buffer is full 
+ *  and an action is required. In this case we simply tell it 
+ *  to switch to the next buffer. 
+ */
 void ADC_Handler() {     // move DMA pointers to next buffer
-  
+
+  // Obtain the Interrupt Status Register
   int f = ADC->ADC_ISR;
-  
-  if (f&(1<<27)) {
+
+  if (f&(1<<27)) { // if bit 27 of ISR is on
+
+    // Bitwise operation to increment the buffer index bufn
+    // and reset to 0 if it reaches 3
     bufn=(bufn+1)&3;
+    // Asigns the buffer address to be the new buf[bufn]
     ADC->ADC_RNPR=(uint32_t)buf[bufn];
-    ADC->ADC_RNCR=256;
+    // Size of the buffer
+    ADC->ADC_RNCR=BUFFER_LEN;
   }
   
 }
 
+/** 
+ *  This functions initializes the ADC. We basically use the highest
+ *  possible sampling rate and place the ADC in free-running mode, so
+ *  that it is always continously acquiring data. The things we control
+ *  are which channels are enabled in the ADC at any given time.
+ */
 void ADCInitialization() {
 
+  // Enables power to the ADC
   pmc_enable_periph_clk(ID_ADC);
-  adc_init(ADC, SystemCoreClock, 21000000UL, ADC_STARTUP_FAST);
+  // Initialized ADC with maximum frequency and sampling rate
+  //adc_init(ADC, SystemCoreClock, 21000000UL, ADC_STARTUP_FAST);
+  adc_init(ADC, SystemCoreClock, ADC_FREQ_MAX, ADC_STARTUP_FAST);
+  // Puts ADC in free-running mode
   ADC->ADC_MR |= 0x80; // free running
-  
+
+  // Enable only the channels we want at first
+  // (this will be changed according to kicker params 
+  // sent by the webserver)
   disableAllChannels();
   enableAnalogChannel(TRANSFORMER1_VOLT_PIN);
-  enableAnalogChannel(TRANSFORMER2_VOLT_PIN);
-  enableAnalogChannel(TRANSFORMER3_VOLT_PIN);
-  enableAnalogChannel(HV1_MONITOR_PIN);
-  enableAnalogChannel(HV2_MONITOR_PIN);
-  enableAnalogChannel(HV3_MONITOR_PIN);
-  
+  //  enableAnalogChannel(TRANSFORMER2_VOLT_PIN);
+  //  enableAnalogChannel(TRANSFORMER3_VOLT_PIN);
+  //  enableAnalogChannel(HV1_MONITOR_PIN);
+  //  enableAnalogChannel(HV2_MONITOR_PIN);
+  //  enableAnalogChannel(HV3_MONITOR_PIN);
+
+  // Enable interrupts for the ADC (to call the function
+  // ADC_Handler() when it saturates the buffer)
   NVIC_EnableIRQ(ADC_IRQn);
   ADC->ADC_IDR = ~(1<<27);
   ADC->ADC_IER = 1<<27;
-  
+
+  // Assigns first buffer and the next buffer
   ADC->ADC_RPR = (uint32_t)buf[0];   // DMA buffer
-  ADC->ADC_RCR = 256;
+  ADC->ADC_RCR = BUFFER_LEN;
   ADC->ADC_RNPR = (uint32_t)buf[1]; // next DMA buffer
-  ADC->ADC_RNCR = 256;
-  
+  ADC->ADC_RNCR = BUFFER_LEN;
+
+  // Hmm can't remember what this one does
   ADC->ADC_EMR |= (1<<24);
-  
+
+  // Start the ADC
   bufn=obufn=1;
   ADC->ADC_PTCR=1;
   ADC->ADC_CR=2;
@@ -354,7 +464,10 @@ void FSCallback();
 
 Scheduler runner, hpr;
 
-//Tasks
+// Tasks
+// This defines the tasks and their properties, such as 
+// how often and how many times the task should execute,
+// and what is the callback function
 Task readAndSendInputs(0, TASK_FOREVER, &readAndSendInputsCallback);
 Task HV(7*MS, 2, &HVCallbackON);
 Task CS((997+2*10*(8-1)+197)*MS, TASK_FOREVER, &CSCallback);
@@ -365,36 +478,51 @@ Task FS(10*MS, 8, &FSCallback);
 // -----------------------------------------------------------------------------------------------------
 // Function implementations
 
+/** 
+ *  This function is called periodically to check if the ADC buffer
+ *  is full, that is, if obufn is different from bufn, which means
+ *  that the ADC_Handler() was invoked and updated the buffer. If
+ *  there is enough space in the out_buffer, the latest ADC buffer is
+ *  written to it, and if not we need to wait for the SPI transmission
+ *  to clear the out_buffer and continue writing to it.
+ */
 void checkIfADCBufferFull() {
-  if (obufn != bufn && spiBufferCounter < 8) {
-      for (unsigned int i = 0; i < 2*BUFFER_LEN; i++) {
-  //      if (spiBufferCounter == 0 && (i == 0 || i == 1)) {
-  //        out_buffer[0] = 0x4C;
-  //        out_buffer[1] = 0x47;
-  //      }
-  //      else {
-          out_buffer[spiBufferCounter * 2 * BUFFER_LEN + i] = (uint8_t)((buf[obufn][i/2] & 0xff00) >> 8);
-          i++;
-          out_buffer[spiBufferCounter * 2 * BUFFER_LEN + i] = (uint8_t)(buf[obufn][i/2] & 0xff);
-  //      }
-      }
+  if (obufn != bufn && spiBufferCounter < maxAdcBuffers) { // If ADC is at next buffer and we have space
+    for (unsigned int i = 0; i < 2*BUFFER_LEN; i++) {
+      // Fills the out_buffer with the latest ADC buffer, splitting 16-bit into two 8-bits
+      out_buffer[spiBufferCounter * 2 * BUFFER_LEN + i] = (uint8_t)((buf[obufn][i/2] & 0xff00) >> 8);
+      i++;
+      out_buffer[spiBufferCounter * 2 * BUFFER_LEN + i] = (uint8_t)(buf[obufn][i/2] & 0xff);
+    }
     spiBufferCounter++;
+    // Updates obufn to match bufn
     obufn = (obufn+1) & 3;
   }
-  else {
+  else { // ADC updated buffer but we are out of space, just update the buffer index
     if (obufn != bufn)
       obufn = (obufn+1) & 3;
   }
 }
 
+/** 
+ *  This function also runs periodically in the task scheduler loop
+ *  to see if the out_buffer is full, and if it is, proceeds to call
+ *  spiSendReceiveNonBlock to send it via SPI.
+ */
 bool checkIfOutBufferFull() {
-  if (spiBufferCounter == 8) {
+  
+  if (spiBufferCounter == maxAdcBuffers) {
+    // Changes first two bytes to error-correction code
     out_buffer[0] = 0x4C;
     out_buffer[1] = 0x47;
-    spiDoneFlag = spiSendReceiveNonBlock(out_buffer, in_buffer, 4092);
+    spiDoneFlag = spiSendReceiveNonBlock(out_buffer, in_buffer, SPI_BUFF_SIZE);
   }
+
+  // SPI takes a while to complete, check if it's done in 
+  // the current call to this function
   if (spiDoneFlag) {
 
+    // Check for errors in the transmission
     if (in_buffer[0] != 0x46 || in_buffer[29] != 0x55) {
       Serial.println("[checkIfOutBufferFull] Error! SPI communication didn't pass integrity test! Dropping data...");
       spiBufferCounter = 0;
@@ -409,11 +537,15 @@ bool checkIfOutBufferFull() {
     //    }
     //    Serial.println(test);
     
+
+    // Updates control struct with newly received info
+    
     kickerParams.controlFlags = in_buffer[1];
     kickerParams.VoltageOut1 = in_buffer[2];
     kickerParams.VoltageOut2 = in_buffer[3];
     kickerParams.VoltageOut3 = in_buffer[4];
 
+    // Joins the 16-bit data received from the Galileo
     for (int i = 0; i < 2 * 12; i++) {
       kickerParams.all16bitParams[i/2] = ((uint16_t)in_buffer[i+1 + 5] << 8) | in_buffer[i + 5];
       i++;
@@ -431,7 +563,8 @@ bool checkIfOutBufferFull() {
     kickerParams.Fill_Spacing_Time = kickerParams.all16bitParams[9];
     kickerParams.Bunch_Spacing_Time = kickerParams.all16bitParams[10];
     kickerParams.Cycle_Spacing_Time = kickerParams.all16bitParams[11];
-    
+
+    // Resets the SPI out_buffer count
     spiBufferCounter = 0;
     spiDoneFlag = false;
 
@@ -440,6 +573,11 @@ bool checkIfOutBufferFull() {
   return false;
 }
 
+/** 
+ *  Callback function for readAndSendInputs task - 
+ *  Check ADC and SPI buffers, and if complete, calls
+ *  the paramsCallbackUpdate to update the control params
+ */
 void readAndSendInputsCallback() {
   checkIfADCBufferFull();
   bool spiDone = checkIfOutBufferFull();
@@ -449,6 +587,11 @@ void readAndSendInputsCallback() {
   }
 }
 
+/**
+ * Second callback function for reandAndSendInputs - 
+ * acts on the control updates sent by the Galileo,
+ * such as trigger delays and timing, and kicker voltages
+ */
 void paramsCallbackUpdate() {
   
   uint16_t fst = kickerParams.Fill_Spacing_Time;
@@ -457,17 +600,20 @@ void paramsCallbackUpdate() {
   bool TriggerMode = kickerParams.controlFlags & (1 << 0);
   bool RackPowerSupplyStatus = kickerParams.controlFlags & (1 << 1);
   bool HVPowerSupplyStatus = kickerParams.controlFlags & (1 << 2);
-//  bool OilPumpStatus = kickerParams.controlFlags & (1 << 3);
-//  bool FlourinetPumpStatus = kickerParams.controlFlags & (1 << 4);
+  //  bool OilPumpStatus = kickerParams.controlFlags & (1 << 3);
+  //  bool FlourinetPumpStatus = kickerParams.controlFlags & (1 << 4);
   bool GeneralTriggerStatus = kickerParams.controlFlags & (1 << 3);
   bool Kicker_Status_1 = kickerParams.controlFlags & (1 << 4);
   bool Kicker_Status_2 = kickerParams.controlFlags & (1 << 5);
   bool Kicker_Status_3 = kickerParams.controlFlags & (1 << 6);
 
+  // Disables the task CS (Cycle spacing) if we don't want triggers
   if (!GeneralTriggerStatus) {
     if (CS.isEnabled())
       CS.disable();
   }
+  // Else, adjusts the frequency of the triggers according to the
+  // user preferences (sent by Galileo)
   else {
     if (HV.getInterval() != kickerParams.CAP1_Time * MS)
       HV.setInterval(kickerParams.CAP1_Time * MS);
@@ -498,9 +644,39 @@ void paramsCallbackUpdate() {
   analogWrite(HV2_CONTROL_PIN, (HVPowerSupplyStatus & Kicker_Status_2) ? kickerParams.VoltageOut2 : 248);
   analogWrite(HV3_CONTROL_PIN, (HVPowerSupplyStatus & Kicker_Status_3) ? kickerParams.VoltageOut3 : 248);
 
+  // Monitoring analog input pins
+  // (Only enables a monitoring channel if 
+  // that kicker has been enabled by the user)
+
+  controlAnalogChannel(HV1_MONITOR_PIN, (HVPowerSupplyStatus & Kicker_Status_1));
+  controlAnalogChannel(HV2_MONITOR_PIN, (HVPowerSupplyStatus & Kicker_Status_2));
+  controlAnalogChannel(HV3_MONITOR_PIN, (HVPowerSupplyStatus & Kicker_Status_3));
+
+  controlAnalogChannel(TRANSFORMER1_VOLT_PIN, (HVPowerSupplyStatus & Kicker_Status_1));
+  controlAnalogChannel(TRANSFORMER2_VOLT_PIN, (HVPowerSupplyStatus & Kicker_Status_2));
+  controlAnalogChannel(TRANSFORMER3_VOLT_PIN, (HVPowerSupplyStatus & Kicker_Status_3));
+
+  // Wait 10 microseconds to disable the slow monitors
+  // (We only need one sample per second of those, would
+  // be a waste to keep reading them just to discard all the data,
+  // especially with our limitation of just one ADC for all channels)
+  
+  delayMicroseconds(10);
+
+  controlAnalogChannel(HV1_MONITOR_PIN, false);
+  controlAnalogChannel(HV2_MONITOR_PIN, false);
+  controlAnalogChannel(HV3_MONITOR_PIN, false);
+
+  // Resets the callback to the original one
   readAndSendInputs.setCallback(&readAndSendInputsCallback);
 }
 
+/**
+ * Callback function to HV task - one of two
+ * Turns off the capacitor charge trigger, waits for
+ * specified delay, then toggles the SCR trigger, waits
+ * another dealy, then toggles the thyratron trigger
+ */
 void HVCallbackOFF() {
   
   digitalWriteDirect(HV1_INHIBIT_PIN, LOW);
@@ -522,44 +698,78 @@ void HVCallbackOFF() {
   HV.setCallback(&HVCallbackON);
 }
 
+/**
+ * Other callback function to HV task
+ * This just turns on the capacitor charge trigger,
+ * and then changes the callback to OFF, which will wait
+ * the CAPX_Time seconds to turn it off again
+ */
 void HVCallbackON() {
   digitalWriteDirect(HV1_INHIBIT_PIN, HIGH);
   HV.setCallback(&HVCallbackOFF);
 }
 
+/**
+ * Trigger control callback functions
+ * Order: CS -> BS -> FS
+ * (Cycle -> Bunch -> Fill)
+ */
 void CSCallback() {
-    BS.restart();
+  BS.restart();
 }
 
 void BSCallback() {
-    FS.restart(); 
+  FS.restart(); 
 }
 
 void FSCallback() {
-    if (HV.isEnabled()) {
-        Serial.println("Skipping a beat...");
-        return;
-    }
-    Scheduler &s = Scheduler::currentScheduler();
-    Task &t = s.currentTask();
-    if (t.getOverrun() < 0) {
-      Serial.print("Overrun: ");
-      Serial.println(t.getOverrun());
-      Serial.print("startDelay: ");
-      Serial.println(t.getStartDelay());
-      Serial.print("count number of hv: ");
-      Serial.println(HV.getRunCounter());
-    }
-    //Serial.println("BOS_TRIGGER");
-    digitalWriteDirect(BOS_TRIGGER_PIN, HIGH);
-    digitalWriteDirect(BOS_TRIGGER_PIN, LOW);
 
-    HV.restart();
-    //HV.forceNextIteration();
+  // This check is important to ensure that we are 
+  // not "skipping a beat", that is, if for some reason
+  // the microcontroller wasn't able to complete a full
+  // trigger cycle, we don't want to start another one
+  // and overlap with the current, because this would
+  // destroy the important real-time character of the
+  // trigger. Instead we would rather skip a trigger fill
+  // and wait for the current one to end so we can keep
+  // the timing right. Note that this should rarely if ever
+  // happen. To check we ask if HV is still enabled 
+  // (it shouldn't if it's over) and if so we just return
+  if (HV.isEnabled()) {
+      Serial.println("Skipping a beat...");
+      return;
+  }
+
+  // Another test to see if we got overrun, that is,
+  // if this function is executing at a timer later than
+  // what it was scheduled to execute. If it is then it's
+  // a problem, because we are no longer running in real-time
+  Scheduler &s = Scheduler::currentScheduler();
+  Task &t = s.currentTask();
+  if (t.getOverrun() < 0) {
+    Serial.print("Overrun: ");
+    Serial.println(t.getOverrun());
+    Serial.print("startDelay: ");
+    Serial.println(t.getStartDelay());
+    Serial.print("count number of hv: ");
+    Serial.println(HV.getRunCounter());
+  }
+  
+  // Begin a trigger cycle with a BOS signal
+  digitalWriteDirect(BOS_TRIGGER_PIN, HIGH);
+  digitalWriteDirect(BOS_TRIGGER_PIN, LOW);
+  
+  HV.restart();
+  //HV.forceNextIteration();
 }
 
 
+// -----------------------------------------------------------------------------------------------------
+// "Main"
+
 void setup () {
+
+  // Initialize Serial, ADC, SPI
   
   Serial.begin(115200);
   Serial.println("Kicker Control And Monitoring - Arduino Due Sketch");
@@ -570,6 +780,8 @@ void setup () {
   
   SPIInitialization(slaveSelectPin);
 
+  // Set up all pins
+
   pinMode(BOS_TRIGGER_PIN, OUTPUT);
   pinMode(HV1_INHIBIT_PIN, OUTPUT);
   pinMode(SCR1_CHARGE_PIN, OUTPUT);
@@ -577,8 +789,8 @@ void setup () {
   pinMode(RACK1_PS_PIN, OUTPUT);
   pinMode(RACK2_PS_PIN, OUTPUT);
   pinMode(RACK3_PS_PIN, OUTPUT);
-//  pinMode(OIL_PUMP_PIN, OUTPUT);
-//  pinMode(FLOURINET_PUMP_PIN, OUTPUT);
+  //  pinMode(OIL_PUMP_PIN, OUTPUT);
+  //  pinMode(FLOURINET_PUMP_PIN, OUTPUT);
   pinMode(HV1_PS_PIN, OUTPUT);
   pinMode(HV2_PS_PIN, OUTPUT);
   pinMode(HV3_PS_PIN, OUTPUT);
@@ -586,16 +798,21 @@ void setup () {
   pinMode(HV2_CONTROL_PIN, OUTPUT);
   pinMode(HV3_CONTROL_PIN, OUTPUT);
 
-//  pinMode(HV1_MONITOR_PIN, INPUT_PULLUP);
-//  pinMode(TRANSFORMER1_VOLT_PIN, INPUT_PULLUP);
-//  pinMode(TRANSFORMER2_VOLT_PIN, INPUT_PULLUP);
-//  pinMode(TRANSFORMER3_VOLT_PIN, INPUT_PULLUP);
+  //  pinMode(HV1_MONITOR_PIN, INPUT_PULLUP);
+  //  pinMode(TRANSFORMER1_VOLT_PIN, INPUT_PULLUP);
+  //  pinMode(TRANSFORMER2_VOLT_PIN, INPUT_PULLUP);
+  //  pinMode(TRANSFORMER3_VOLT_PIN, INPUT_PULLUP);
 
-  
+
+  // Sets up all tasks and task schedulers
+  // Runner is the regular scheduler, and hpr
+  // is the high-priority scheduler, that only 
+  // contains the trigger tasks (these need to be
+  // real-time so require high priority over other tasks)
   
   runner.init();
   hpr.init();
-  Serial.println("[Main] Initialized scheduler");
+  Serial.println("[Main] Initialized schedulers");
 
   runner.setHighPriorityScheduler(&hpr);
   
