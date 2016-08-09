@@ -15,7 +15,7 @@
 */
 
 // Includes
-
+////
 #include <ArduinoJson.h>
 #include <stdio.h>
 #include <SPI.h>
@@ -390,9 +390,7 @@ void loop() {
     
     if (errorFlag) {
       Serial.println("ERROR in SPI transmission! Trying to reset SPI...");
-//      SPI.begin(); 
-//      SPI.setClockDivider(SPI_CLOCK_DIV2);
-//      SPI.setDataMode(SPI_MODE1);
+
       digitalWrite(slaveSelectPin,HIGH);
       delay(10);
       digitalWrite(slaveSelectPin,LOW);
