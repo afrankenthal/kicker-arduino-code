@@ -15,3 +15,5 @@ If you want to do further development to this code then you will need a few tool
 ### Installation Instructions
 
 After the IDEs and the Due core in 1.6.7 are installed, copy the [kickerControlArduinoV2](kickerControlArduinoV2/) and the [kickerControlGalileoV2](kickerControlGalileoV2/) folders to your `~/Documents/Arduino` folder. Also copy the libraries in [libs](libs/) to the `~/Documents/Arduino/libraries` folder. Connect the USB programming port of the Arduino Due to the computer, and the client USB port of the Intel Galileo to the computer. Make sure you know which port is which in the two IDEs. Open the respective files in each IDE and choose the appropriate board and appropriate port for each, in the menu on top (Tools -> Board and Tools -> Port). To upload the code to the boards, simply click on the right arrow button on top of the code window. After the code has been uploaded, go to Tools -> Serial Monitor (or hit Shift-Ctrl-M) on each IDE to open the Serial monitor and see the messages sent via that Serial interface to the computer.
+
+Last update: Dec 13, 2016
